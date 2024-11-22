@@ -1,9 +1,13 @@
 import os
-import sys
+import time
+
+import pillow_heif
 import pytesseract
+import argparse
 from PIL import Image
 from notion_client import Client
 from dotenv import load_dotenv
+from pillow_heif import register_heif_opener
 
 # load envs
 load_dotenv()
@@ -19,7 +23,16 @@ NOTION_PAGE_ID = os.getenv("NOTION_PAGE_ID")
 # helpers
 def extract_text_from_image(image_path):
     try:
-        image = Image.open(image_path)
+        if image_path.lower().endswith('.heic'):
+            heif_file = pillow_heif.read_heif(image_path)
+            image = Image.frombytes(
+                heif_file.mode,
+                heif_file.size,
+                heif_file.data,
+                "raw",
+            )
+        else:
+            image = Image.open(image_path)
         text = pytesseract.image_to_string(image, lang='pol')
         return text
     except Exception as e:
@@ -45,6 +58,11 @@ def add_text_to_notion(text, slide_number):
                             }
                         ]
                     }
+                },
+                {
+                    "object": "block",
+                    "type": "divider",
+                    "divider": {}
                 }
             ]
         )
@@ -53,21 +71,46 @@ def add_text_to_notion(text, slide_number):
         print(f"Error during adding note: {e}")
 
 
-def scan_images_in_folder(folder_path):
-    slide_number = 1
+def scan_images_in_folder(folder_path, slide_number=1):
     for filename in os.listdir(folder_path):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.heic')):
             image_path = os.path.join(folder_path, filename)
             extracted_text = extract_text_from_image(image_path)
             if extracted_text:
                 add_text_to_notion(extracted_text, slide_number)
                 slide_number += 1
+    return slide_number
+
+
+def watch_folder(folder_path):
+    processed_files = set(os.listdir(folder_path))
+    slide_number = 1
+    while True:
+        current_files = set(os.listdir(folder_path))
+        new_files = current_files - processed_files
+        if new_files:
+            for filename in new_files:
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.heic')):
+                    image_path = os.path.join(folder_path, filename)
+                    extracted_text = extract_text_from_image(image_path)
+                    if extracted_text:
+                        add_text_to_notion(extracted_text, slide_number)
+                        slide_number += 1
+            processed_files = current_files
+        time.sleep(5)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: slides-to-notion.py <path to image dir>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Scan slides and add text to notion")
+    parser.add_argument("--path", required=True, help="Path to directory to watch")
+    parser.add_argument("--watch", action="store_true", help="Watch for changes in directory")
 
-    folder_path = sys.argv[1]
-    scan_images_in_folder(folder_path)
+    args = parser.parse_args()
+    folder_path = args.path
+
+    register_heif_opener()
+
+    if args.watch:
+        watch_folder(folder_path)
+    else:
+        scan_images_in_folder(folder_path)
